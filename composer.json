@@ -1,9 +1,18 @@
 {
     "name": "tinymvc/tinyqr",
-    "description": "add description here..",
+    "description": "Lightweight PHP QR code generator and decoder with PNG and SVG output.",
+    "type": "library",
+    "keywords": ["qr", "qrcode", "png", "svg", "decoder"],
     "license": "MIT",
     "require": {
-        "php": ">=8.2"
+        "php": ">=8.2",
+        "ext-filter": "*",
+        "ext-zlib": "*"
+    },
+    "suggest": {
+        "ext-gd": "Required to decode raster images; matrix decoding does not need GD.",
+        "ext-mbstring": "Enables decoding Kanji and Shift-JIS byte segments (or use ext-iconv).",
+        "ext-iconv": "Alternative to ext-mbstring for decoding Kanji and Shift-JIS byte segments."
     },
     "autoload": {
         "psr-4": {

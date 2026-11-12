@@ -17,7 +17,10 @@ use function strlen;
  * - Error correction L/M/Q/H (optionally "boosted" for free when it fits)
  * - Smallest version that fits, automatic best-mask selection
  *
- * Returns a module matrix; rendering is done by Encoder.
+ * Returns a module matrix; rendering is done by Generator.
+ *
+ * @author Shahin Moyshan <shahin.moyshan2@gmail.com>
+ * @version 1.0.0
  */
 final class Encoder
 {
@@ -68,6 +71,7 @@ final class Encoder
      */
     public static function encode(string $data, string $ecc = 'M', bool $boostEcc = true, int $mask = -1): array
     {
+        $ecc = strtoupper($ecc);
         if (!isset(self::ECC_INDEX[$ecc])) {
             throw new InvalidArgumentException('Invalid ECC level.');
         }
@@ -77,13 +81,21 @@ final class Encoder
         if ($data === '') {
             throw new InvalidArgumentException('Data cannot be empty.');
         }
-
-        self::initGalois();
+        if (strlen($data) > 7089) {
+            throw new LengthException('Data exceeds the maximum QR code capacity of 7089 numeric characters.');
+        }
 
         $mode = self::detectMode($data);
         $count = strlen($data);
-        $payload = self::encodePayload($data, $mode);
-        $payLen = strlen($payload);
+        $payLen = match ($mode) {
+            'numeric' => intdiv($count, 3) * 10 + [0, 4, 7][$count % 3],
+            'alnum' => intdiv($count, 2) * 11 + ($count % 2) * 6,
+            'byte' => $count * 8,
+        };
+        // Declare UTF-8 for non-ASCII text; arbitrary binary bytes remain unchanged.
+        $utf8 = $mode === 'byte' && preg_match('/[\x80-\xff]/', $data) === 1
+            && preg_match('//u', $data) === 1;
+        $eciBits = $utf8 ? 12 : 0;
         $eccIdx = self::ECC_INDEX[$ecc];
 
         // Smallest version that fits
@@ -95,7 +107,7 @@ final class Encoder
             if ($count >= (1 << $ccBits)) {
                 continue;
             }
-            if (4 + $ccBits + $payLen <= self::numDataCodewords($version, $eccIdx) * 8) {
+            if ($eciBits + 4 + $ccBits + $payLen <= self::numDataCodewords($version, $eccIdx) * 8) {
                 break;
             }
         }
@@ -104,7 +116,7 @@ final class Encoder
         if ($boostEcc) {
             foreach (['M', 'Q', 'H'] as $candidate) {
                 $ci = self::ECC_INDEX[$candidate];
-                if ($ci > $eccIdx && 4 + $ccBits + $payLen <= self::numDataCodewords($version, $ci) * 8) {
+                if ($ci > $eccIdx && $eciBits + 4 + $ccBits + $payLen <= self::numDataCodewords($version, $ci) * 8) {
                     $ecc = $candidate;
                     $eccIdx = $ci;
                 }
@@ -112,9 +124,11 @@ final class Encoder
         }
 
         // Bit stream -> data codewords
+        self::initGalois();
         $capBytes = self::numDataCodewords($version, $eccIdx);
-        $bits = ['numeric' => '0001', 'alnum' => '0010', 'byte' => '0100'][$mode];
-        $bits .= str_pad(decbin($count), $ccBits, '0', STR_PAD_LEFT) . $payload;
+        $bits = $utf8 ? '011100011010' : ''; // ECI assignment 26 (UTF-8)
+        $bits .= ['numeric' => '0001', 'alnum' => '0010', 'byte' => '0100'][$mode];
+        $bits .= str_pad(decbin($count), $ccBits, '0', STR_PAD_LEFT) . self::encodePayload($data, $mode);
         $bits .= str_repeat('0', min(4, $capBytes * 8 - strlen($bits)));
         $bits .= str_repeat('0', (8 - strlen($bits) % 8) % 8);
 
@@ -153,11 +167,42 @@ final class Encoder
         ];
     }
 
+    // ------------------------------------------------- helpers for the decoder
+
+    /** @return bool[][] Function-pattern map (true = not a data module). */
+    public static function functionMask(int $version): array
+    {
+        if ($version < 1 || $version > 40) {
+            throw new InvalidArgumentException('Version must be between 1 and 40.');
+        }
+        $encoder = new self($version, 'L');
+        $encoder->drawFunctionPatterns();
+        return $encoder->isFn;
+    }
+
+    /** @return array{blocks:int, eccLen:int, rawCodewords:int} */
+    public static function blockInfo(int $version, string $ecc): array
+    {
+        if ($version < 1 || $version > 40) {
+            throw new InvalidArgumentException('Version must be between 1 and 40.');
+        }
+        $ecc = strtoupper($ecc);
+        if (!isset(self::ECC_INDEX[$ecc])) {
+            throw new InvalidArgumentException('Invalid ECC level.');
+        }
+        $index = self::ECC_INDEX[$ecc];
+        return [
+            'blocks' => self::NUM_ERROR_CORRECTION_BLOCKS[$index][$version],
+            'eccLen' => self::ECC_CODEWORDS_PER_BLOCK[$index][$version],
+            'rawCodewords' => intdiv(self::numRawDataModules($version), 8),
+        ];
+    }
+
     // ---------------------------------------------------------------- segments
 
     private static function detectMode(string $data): string
     {
-        if (ctype_digit($data)) {
+        if (preg_match('/^[0-9]+$/D', $data) === 1) {
             return 'numeric';
         }
         if (preg_match('/^[0-9A-Z $%*+\-.\/:]+$/D', $data) === 1) {
@@ -519,9 +564,28 @@ final class Encoder
                     $score += strlen($run) - 2;
                 }
             }
-            // Rule 3: finder-like 1:1:3:1:1 patterns with 4 light modules on a side
-            $p = "0000{$s}0000";
-            $score += 40 * (substr_count($p, '10111010000') + substr_count($p, '00001011101'));
+            // Rule 3: count overlapping and scaled 1:1:3:1:1 patterns, including the light border.
+            $border = str_repeat('0', $n);
+            preg_match_all('/0+|1+/', $border . $s . $border, $matches);
+            $runs = array_map('strlen', $matches[0]);
+            $runCount = count($runs);
+            for ($i = 1; $i + 5 < $runCount; $i += 2) {
+                $width = $runs[$i];
+                if (
+                    $runs[$i + 1] !== $width || $runs[$i + 2] !== 3 * $width
+                    || $runs[$i + 3] !== $width || $runs[$i + 4] !== $width
+                ) {
+                    continue;
+                }
+                $before = $runs[$i - 1];
+                $after = $runs[$i + 5];
+                if ($before >= 4 * $width && $after >= $width) {
+                    $score += 40;
+                }
+                if ($after >= 4 * $width && $before >= $width) {
+                    $score += 40;
+                }
+            }
         }
 
         // Rule 2: 2x2 blocks
