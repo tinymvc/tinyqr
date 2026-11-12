@@ -4,7 +4,7 @@
 
 ![PHP 8.2+](https://img.shields.io/badge/PHP-8.2%2B-777bb4)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-[![Tests](https://img.shields.io/badge/tests-PHP%20runner-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-433%20passed-brightgreen.svg)](tests/)
 
 ```php
 use Spark\Qr\Generator;
@@ -12,7 +12,14 @@ use Spark\Qr\Generator;
 Generator::create('https://example.com')->saveToFile(__DIR__ . '/qr.png');
 ```
 
-[Install](#installation) · [Quick start](#quick-start) · [Output](#output) · [Configuration](#configuration) · [Payload helpers](#payload-helpers) · [Decoding](#decoding) · [Errors](#limits-and-errors) · [Tests](#tests)
+- [Install](#installation)
+- [Quick start](#quick-start)
+- [Output](#output)
+- [Configuration](#configuration)
+- [Payload helpers](#payload-helpers)
+- [Decoding](#decoding)
+- [Errors](#limits-and-errors)
+- [Tests](#tests)
 
 ## Features
 
